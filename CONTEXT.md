@@ -66,13 +66,79 @@ ai-modular-sim/
   실측 근거는 없음. 정성적 패턴(격리 > 전체 재학습)은 robust하지만 정확한 숫자는
   다음 단계에서 검증 필요.
 
-## 다음 단계 (②번, 아직 시작 안 함)
-ML 레벨 실험: 실제로 독립적으로 사전학습된 소형 모델 2개를 준비하고, 그 사이를
-잇는 작은 어댑터(LoRA류 또는 LLaVA식 프로젝션 레이어)를 학습시켜서:
-- 어댑터 학습에 실제로 얼마나 걸리는지 (위 시뮬레이션의 retrain_time 상수의 근거)
-- 학습 도중/직후 품질이 얼마나 떨어졌다가 회복하는지 곡선의 실제 모양
-- 한쪽 모델을 다른 버전으로 교체했을 때 어댑터가 얼마나 망가지는지
-를 측정해서 시스템 시뮬레이션의 가정들을 검증하는 것이 목표.
+## ② ML 레벨 실험 (완료 — 1차 라운드)
+
+`ml_experiment/` 폴더에 두 개의 실제 실험을 구현/실행함. 둘 다 "module A(고정) +
+module B(고정) + 학습 가능한 Adapter" 구조에서, 처음부터 adapter를 학습시킨 뒤
+한쪽 module을 교체하고 adapter quality가 얼마나 깨지는지/얼마나 빨리 회복하는지
+측정하는 동일한 프로토콜(`ml_experiment/common.py`의 `RetrainHarness`)을 공유.
+
+폴더 구조:
+```
+ml_experiment/
+  common.py           # Adapter(2-layer MLP+residual), RetrainHarness (학습/재학습 곡선 기록)
+  exp_image_text.py   # 실험 1: 미니 CLIP류 (이미지<->텍스트)
+  exp_text_text.py    # 실험 2: 문장 임베딩 공간 stitching (텍스트<->텍스트)
+  plot_results.py     # results/*.json -> quality_curves.png + summary.txt
+  run_all.py          # 두 실험 순차 실행 + plot
+  requirements.txt    # sentence-transformers, datasets, tqdm
+                      # (torch/torchvision은 GPU판이라 별도: pip install torch torchvision
+                      #  --index-url https://download.pytorch.org/whl/cu121)
+  results/            # *.json (raw curve), quality_curves.png, summary.txt
+```
+
+### 실험 1: 미니 CLIP (이미지<->텍스트)
+- Module A = frozen 이미지 인코더(ResNet18 ImageNet-pretrained) → 나중에 ResNet34로 교체.
+- Module B = frozen 텍스트 인코더(sentence-transformers `all-MiniLM-L6-v2`), 고정.
+- Interface = adapter가 이미지 임베딩을 텍스트 임베딩 공간으로 projection.
+- Task: CIFAR-10 이미지를 "a photo of a {class}" 프롬프트 10개 중 하나로 분류
+  (zero-shot 방식), quality = top-1 accuracy. 이미지 임베딩은 미리 캐싱해서
+  adapter 학습 자체는 매우 빠름(순수 MLP 연산).
+- **결과**: 초기 학습 83.9% 정확도 도달 → ResNet18→ResNet34 교체 직후 **7.9%로 붕괴**
+  (거의 랜덤 수준, 인터페이스 완전 파괴) → adapter만 재학습 시 **20 스텝(0.13초)** 만에
+  95% 수준(79.7%) 회복, 최종적으로는 원래보다 살짝 높은 87%대까지 회복.
+
+### 실험 2: 텍스트<->텍스트 임베딩 공간 stitching
+- Module A = frozen 문장 임베딩 모델(`all-MiniLM-L6-v2`), 고정.
+- Module B = frozen 문장 임베딩 모델, 처음엔 `paraphrase-MiniLM-L6-v2` → 나중에
+  `all-MiniLM-L12-v2`로 교체("검색 인덱스가 최신 임베딩 모델로 재인코딩됨" 시나리오).
+- Interface = adapter가 A의 임베딩을 B의 임베딩 공간으로 translation. Label 없이
+  같은 문장의 A/B 임베딩 쌍만으로 in-batch contrastive 학습(자기지도).
+- Task: AG News 문장(`fancyzhx/ag_news`) 3000개로 학습, 800개로 평가. quality =
+  batch 내에서 자기 자신의 B 임베딩을 negative들 사이에서 찾아내는 top-1 retrieval accuracy.
+- **결과**: 초기 학습 96.9% → module B 교체 직후 **95.4%** (드롭 단 1.5%) →
+  5 스텝(0.026초)만에 95% 회복 기준 통과.
+
+### 핵심 발견 — 시뮬레이션 가정과의 비교
+- **"module이 얼마나 다르게 바뀌었는가"가 interface 붕괴 폭을 결정한다**: 완전히 다른
+  아키텍처로 교체(ResNet18→34, 서로 다른 학습 목적함수로 나온 이미지 vs 텍스트
+  임베딩 정렬)는 거의 랜덤 수준까지 붕괴(-90.6%p). 반면 같은 계열의 문장 임베딩
+  모델끼리 교체(MiniLM 계열, 비슷한 학습 레시피)는 거의 영향 없음(-1.5%p). 즉
+  1차 시뮬레이션이 가정한 "고정된 degraded_quality 상수"는 과도하게 단순화된
+  것 — 실제로는 module 간 표현 공간의 유사도에 따라 붕괴 폭이 크게 달라짐.
+- **retrain_time은 시뮬레이션 가정(40 time-unit, 상대적으로 느림)과 질적으로 다른
+  양상**: adapter 자체가 작고 임베딩을 캐싱해둔 상태에서는 재학습이 사실상
+  즉각적(0.03~0.13초, 5~20 스텝)임. 시뮬레이션의 "재학습에 시간이 걸린다"는
+  가정의 실제 병목은 gradient step 수가 아니라 ① 새 module로 전체 데이터셋의
+  임베딩을 다시 뽑는 비용, ② 실제 서비스에 새 adapter를 배포하는 절차일 가능성이
+  높다 — 다음 라운드에서 이 두 가지를 시간 축에 넣어 재검증할 필요.
+- **정성적 결론(모듈화가 유리하다)은 여전히 유효**: 두 실험 모두 "작은 adapter만
+  재학습하면 됨"이 실제로 매우 빠르고 값싸다는 것을 확인. monolithic처럼 전체
+  모델을 재학습해야 하는 상황과 비교하면 여전히 압도적으로 유리함.
+
+### 다음 라운드 후보
+- retrain_time에 "새 module로 임베딩 재추출" 비용을 포함시켜 실측.
+- module 간 표현 공간 유사도(예: CKA, 임베딩 공간 정렬도)를 직접 측정해서
+  degraded_quality를 예측하는 지표로 쓸 수 있는지 확인.
+- adapter 크기/구조를 바꿔가며 재학습 속도-품질 트레이드오프 스윕.
+
+### 실행 방법
+```
+cd ml_experiment
+../venv/Scripts/python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+../venv/Scripts/python.exe -m pip install -r requirements.txt
+../venv/Scripts/python.exe run_all.py
+```
 
 ## 실행 방법 (다른 PC에서)
 ```
@@ -84,5 +150,6 @@ python -m venv venv
 ```
 
 ## 새 세션에서 이어가려면
-이 CONTEXT.md 전체를 Claude에게 붙여넣고 "여기서부터 이어서, ② ML 레벨 실험을
-시작해줘" 라고 요청하면 됨.
+이 CONTEXT.md 전체를 Claude에게 붙여넣고 "여기서부터 이어서, ② ML 레벨 실험
+다음 라운드(임베딩 재추출 비용 포함한 retrain_time 재측정, 표현 공간 유사도
+지표로 degraded_quality 예측) 진행해줘" 라고 요청하면 됨.

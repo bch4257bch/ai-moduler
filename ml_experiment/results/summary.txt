@@ -1,0 +1,11 @@
+[image_text]
+  quality_before_swap            = 0.8390
+  quality_immediately_after_swap  = 0.0790  (drop 90.6%)
+  retrain_time_sec (to 95% recov) = 0.12555570004042238
+  steps_to_recover                = 20
+
+[text_text]
+  quality_before_swap            = 0.9688
+  quality_immediately_after_swap  = 0.9537  (drop 1.5%)
+  retrain_time_sec (to 95% recov) = 0.025597099971491843
+  steps_to_recover                = 5
