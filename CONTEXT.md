@@ -32,7 +32,10 @@ ai-modular-sim/
     metrics.py    # MetricsCollector — 요청별 (시간, latency, quality) 기록 및 시간대별 집계
     scenario.py   # 모놀리식/모듈러 파이프라인 구성, 트래픽 생성기, 업데이트 스케줄러
     plot.py       # 결과 그래프 + 텍스트 요약 출력
+  org/            # ③ 회사 조직 구조 오케스트레이션 (contract/department/adapter/company/demo)
+  tests/          # org 단위 테스트
   main.py         # 엔트리포인트 (python main.py 실행)
+  org_main.py     # ③ 데모 엔트리포인트
   results.png     # 마지막 실행 결과 그래프
   requirements.txt
   CONTEXT.md      # 이 파일
@@ -139,6 +142,37 @@ cd ml_experiment
 ../venv/Scripts/python.exe -m pip install -r requirements.txt
 ../venv/Scripts/python.exe run_all.py
 ```
+
+## ③ 회사 조직 구조 기반 오케스트레이션 (진행 중 — 1차 골격)
+
+최종 목표(AI 구조를 하드웨어로 구축)를 위해, 먼저 소프트웨어로 "칩들이 꽂힌 기판"
+구조를 만들어 보는 단계. 오케스트레이션을 회사의 부서 구조처럼 구성함.
+
+| 회사 비유 | 소프트웨어 (`org/`) | 하드웨어 대응 |
+|---|---|---|
+| 부서 | `Department` | 칩 1개 (모듈화된 모델 1개) |
+| 서류 양식 | `Spec` / `Port` (필드명·종류·고정 차원) | 칩의 핀/버스 규격 |
+| 번역 담당 | `Adapter` | 칩 간 브리지 (②의 학습된 adapter) |
+| 조직도의 선 | `Link` | 칩 간 배선 |
+| 사내 메신저 | `Company.run` / `_send` | 기판 버스·인터커넥트 |
+| 팀장(라우터) | 출력에 `_route`를 넣는 부서 | 게이팅/스케줄러 칩 (MoE router) |
+| 인사이동 | `Company.swap` → `SwapReport` | 칩 교체 |
+
+하드웨어로 옮기기 쉽게 일부러 건 제약:
+- 부서끼리는 객체 참조·공유 메모리 없이 **버스를 통한 payload로만** 통신.
+- 모든 링크는 연결 시점에 양식 호환성을 검사. 안 맞으면 `connect` 거부 → Adapter 필요.
+- 버스에는 받는 부서 양식에 있는 필드만 실림 (트래픽 = `Company.traffic`).
+- 부서 교체 시 그 부서에 닿은 링크만 재검사. Adapter가 있던 링크는 양식이 같아도
+  `adapter_stale`(재학습 필요)로 표시 — ②에서 "차원이 같아도 표현이 바뀌면 붕괴"한 결과 반영.
+- 부서별 `cost`(요청당 가상 연산량) 누적 → 칩별 부하/전력 예산 추정용.
+
+데모(`org/demo.py`, 실행: `python org_main.py`): 뉴스 처리 회사
+`reception → triage(라우터) → sports/business/tech 데스크 → editor`.
+tech 데스크를 v2(토큰 대신 16차원 벡터를 받는 칩)로 교체하면 `triage->tech_desk`
+링크만 broken, 나머지 부서는 영향 없음 → tokens→vector Adapter 배치 후 복구.
+현재 부서들은 키워드 규칙 기반 자리표시자이며, 다음 단계에서 실제 소형 모델로 교체 예정.
+
+테스트: `python -m unittest discover tests`
 
 ## 실행 방법 (다른 PC에서)
 ```
