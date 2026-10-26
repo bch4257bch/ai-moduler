@@ -9,7 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # kind -> payload 값이 만족해야 하는 조건
-KINDS = ("text", "tokens", "vector", "label", "scalar")
+# items/numbers 의 dim 은 '최대 길이'(슬롯 수), vector 의 dim 은 '정확한 길이'.
+KINDS = ("text", "tokens", "vector", "label", "scalar", "items", "numbers")
 
 
 class SpecError(ValueError):
@@ -37,6 +38,10 @@ class Port:
             and all(isinstance(x, (int, float)) for x in v),
             "label": lambda v: isinstance(v, str),
             "scalar": lambda v: isinstance(v, (int, float)),
+            "items": lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)
+            and (self.dim is None or len(v) <= self.dim),
+            "numbers": lambda v: isinstance(v, list) and all(isinstance(x, (int, float)) for x in v)
+            and (self.dim is None or len(v) <= self.dim),
         }[self.kind](value)
         if not ok:
             raise SpecError(f"field {field!r}: value does not match {self}")

@@ -1,8 +1,10 @@
 """Company = 부서들 + 조직도(링크) + 사내 버스. 칩들이 꽂힌 기판에 대응."""
 from __future__ import annotations
 
+import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from .adapter import Adapter
 from .department import ROUTE_KEY, Department
@@ -10,6 +12,18 @@ from .department import ROUTE_KEY, Department
 
 class OrgError(RuntimeError):
     pass
+
+
+class Supervisor(Protocol):
+    """버스 수준에서 모든 부서 호출을 감시하는 역할 (예: 재정관리부의 장부).
+
+    부서 내부를 들여다보지 않고, 호출 직전 승인과 호출 직후 사용량 기록만 한다.
+    before()에서 예외를 던지면 그 부서는 실행되지 않는다.
+    """
+
+    def before(self, dept: str) -> None: ...
+
+    def after(self, dept: str, used: float, seconds: float) -> None: ...
 
 
 @dataclass
@@ -55,6 +69,7 @@ class Company:
         self.links: dict[tuple[str, str], Link] = {}
         self.traffic: Counter = Counter()  # (src, dst) -> 메시지 수 (버스 대역폭 추정용)
         self.trace: list[str] = []          # 마지막 run의 메시지 흐름
+        self.supervisor: Supervisor | None = None
 
     # ---- 조직 구성 -------------------------------------------------------
     def hire(self, dept: Department) -> Department:
@@ -135,7 +150,12 @@ class Company:
             if steps > 10 * max(1, len(self.departments)):
                 raise OrgError("routing loop detected")
             dept = self.departments[name]
+            if self.supervisor is not None:
+                self.supervisor.before(name)
+            spent_before, t0 = dept.spent, time.perf_counter()
             out = dept.receive(data)
+            if self.supervisor is not None:
+                self.supervisor.after(name, dept.spent - spent_before, time.perf_counter() - t0)
             route = out.pop(ROUTE_KEY, None)
             nexts = self.successors(name)
             if route is not None:
@@ -166,7 +186,7 @@ class Company:
     # ---- 리포트 ----------------------------------------------------------
     def cost_report(self) -> dict[str, float]:
         """부서/어댑터별 누적 가상 연산 비용. 칩별 부하 분포 추정용."""
-        report = {n: d.calls * d.cost for n, d in self.departments.items()}
+        report = {n: d.spent for n, d in self.departments.items()}
         for (s, d), link in self.links.items():
             if link.adapter is not None:
                 report[f"adapter:{s}->{d}"] = link.adapter.calls * link.adapter.cost

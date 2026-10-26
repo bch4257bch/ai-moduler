@@ -33,6 +33,7 @@ ai-modular-sim/
     scenario.py   # 모놀리식/모듈러 파이프라인 구성, 트래픽 생성기, 업데이트 스케줄러
     plot.py       # 결과 그래프 + 텍스트 요약 출력
   org/            # ③ 회사 조직 구조 오케스트레이션 (contract/department/adapter/company/demo)
+                  #    + ai_company.py(기획/재정/개발부), brain.py(부서 두뇌: 오프라인/Claude)
   tests/          # org 단위 테스트
   main.py         # 엔트리포인트 (python main.py 실행)
   org_main.py     # ③ 데모 엔트리포인트
@@ -173,6 +174,40 @@ tech 데스크를 v2(토큰 대신 16차원 벡터를 받는 칩)로 교체하�
 현재 부서들은 키워드 규칙 기반 자리표시자이며, 다음 단계에서 실제 소형 모델로 교체 예정.
 
 테스트: `python -m unittest discover tests`
+
+### ③-2 AI 회사 구성: 기획부 → 재정관리부 → 개발부 (`org/ai_company.py`)
+
+일반 회사 구조가 아니라 "AI로 구조를 생각했을 때" 필요한 부서만 둔 구성.
+
+| 부서 | 역할 | 입력 → 출력 양식 | 두뇌 |
+|---|---|---|---|
+| 기획부 `planning` | 프로젝트 기획, 정보수집 | `{request}` → `{plan, tasks[≤5]}` | LLM (`--research` 시 웹 검색) |
+| 재정관리부 `finance` | 일정·토큰 관리 | `{plan, tasks}` → `{plan, tasks, budgets[≤5], schedule}` | **규칙 기반** (결정적) |
+| 개발부 `development` | 계획서를 받아 직접 개발 | `{plan, tasks, budgets, schedule}` → `{deliverables[≤5], report}` | LLM |
+
+재정관리부의 두 가지 통제 경로 (공유 상태 없이):
+1. **메시지로 지시**: 작업별 토큰 예산을 개발부에 보냄 → 개발부가 그 값을 출력 상한(max_tokens)으로 써서 스스로 지킴.
+   예산이 모자라면 우선순위 낮은(뒤쪽) 작업부터 "보류" 처리.
+2. **버스 계측**: `Company.supervisor`로 등록되어 모든 부서 호출 전후의 사용량(토큰)과 시간을 장부에 기록.
+   총예산 소진이나 마감 초과 시 다음 부서 실행을 차단 (`BudgetExceeded` / `ScheduleExceeded`).
+   부서 내부를 보지 않고 바깥에서 재는 방식 = 기판의 전력관리 칩(PMU)에 대응.
+
+재정관리부를 LLM이 아닌 규칙 기반으로 둔 이유: 회계·통제는 결정적이어야 하고, 모든 부서가
+연산 칩일 필요는 없음 (제어 전용 칩).
+
+두뇌(`org/brain.py`)는 부서 껍데기와 분리되어 교체 가능:
+- `ScriptedBrain`: 오프라인 자리표시자 (기본값, 테스트용)
+- `ClaudeBrain`: Claude API (`claude-opus-5-5`, 역할별 effort, 거절 시 server-side fallback 자동 사용)
+
+실행:
+```
+python org_main.py ai "만들고 싶은 것"                    # 오프라인
+python org_main.py ai "만들고 싶은 것" --claude           # Claude API (ANTHROPIC_API_KEY 필요)
+python org_main.py ai "..." --claude --research --budget 200000 --deadline 600
+```
+
+다음 후보: 개발부 결과를 기획부/재정관리부가 검토해 재작업을 지시하는 피드백 루프,
+부서별 두뇌를 다른 모델로 바꿨을 때 품질·비용 비교, ①의 simpy 시뮬레이션에 부서별 지연·용량 연결.
 
 ## 실행 방법 (다른 PC에서)
 ```
